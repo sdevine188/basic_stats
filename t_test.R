@@ -11,6 +11,17 @@ library(survey)
 # calculate t.test for difference in proportions
 # https://stattrek.com/estimation/difference-in-proportions.aspx
 
+
+# for continuous values
+# t.test w/ var.equal = TRUE matches OLS output (have not found manual formula for equal variance that will match yet)
+# t.test w/ var.equal = FALSE matches manual method
+
+# for proportions
+# OLS matches manual which matches t.test w/ var.equal = TRUE
+
+# still need to compare weighted OLS with wtd.t.test
+
+
 # inspect
 head(diamonds)
 diamonds %>% count(cut)
@@ -70,8 +81,13 @@ se
 t_score <- x_diff / se
 t_score
 
+# degrees of freedom
+# https://stattrek.com/hypothesis-test/difference-in-means.aspx
+df <- ( (s1^2/n1 + s2^2/n2)^2 ) / ( (s1^2/n1)^2/(n1-1) + (s2^2/n2)^2/(n2-1) )
+df
+
 # get critical_t_value
-critical_t_value <- qt(p = .975, df = min(n1, n2))
+critical_t_value <- qt(p = .975, df = df)
 critical_t_value
 
 # get conf.int
@@ -79,9 +95,13 @@ critical_t_value
 x_diff + (critical_t_value * se)
 x_diff - (critical_t_value * se)
 
+
+
 # get p_value
-p_value <- 2 * pt(q = -abs(t_score), df = n1 + n2 - 2)
+p_value <- 2 * pt(q = -abs(t_score), df = df)
 p_value
+
+
 
 
 
@@ -89,13 +109,20 @@ p_value
 
 
 # using t.test
-# note that degrees of freedom using software is decimal, not simply lesser of n1 and n2
 fair_price <- fair %>% pull(price)
 ideal_price <- ideal %>% pull(price)
 
+# t.test with var.equal = FALSE matches the manual calculation
 t.test(x = fair_price, y = ideal_price, alternative = "two.sided")
 t.test(x = fair_price, y = ideal_price, alternative = "two.sided") %>% tidy()
 t.test(x = fair_price, y = ideal_price, alternative = "two.sided") %>% tidy() %>% pull(p.value)
+
+# if var.equal = TRUE, then t.test matches ols output, including standard error and p-value
+t_test_output <- t.test(x = fair_price, y = ideal_price, alternative = "two.sided", var.equal = TRUE) %>% tidy()
+t_test_output
+t_test_se <- ((t_test_output$estimate1 - t_test_output$estimate2) - t_test_output$conf.low) / 1.96
+t_test_se
+
 
 #########################
 
@@ -261,7 +288,25 @@ fair_price <- fair %>% pull(price)
 ideal_price <- ideal %>% pull(price)
 
 t.test(x = fair_price, y = ideal_price, alternative = "two.sided") %>% tidy()
+t.test(x = fair_price, y = ideal_price, alternative = "two.sided", var.equal = TRUE) %>% tidy()
 
+wtd.t.test(x = fair_price, y = ideal_price)
+wtd.t.test(x = x, y = y, weight = weights_x, weighty = weights_y, 
+           mean1 = weights_are_statistical_not_sample_size, samedata = FALSE) 
+
+ols <- fair %>% bind_rows(., ideal) %>% 
+        mutate(fair_dummy = ifelse(cut == "Fair", 1, 0)) %>%
+        lm(formula = price ~ fair_dummy, data = .) 
+
+ols %>% summary()
+ols %>% tidy()
+
+# get conf int 
+ols_se <- ols %>% tidy() %>% filter(term == "fair_dummy") %>% pull(std.error)
+ols_se
+
+x_diff + (critical_t_value * ols_se)
+x_diff - (critical_t_value * ols_se)
 
 #########################
 
@@ -307,6 +352,75 @@ wtd.t.test(x = data %>% filter(group == "x") %>% pull(values),
 
 ###################
 
+
+##########################################################################################################
+##########################################################################################################
+
+
+# compare t.test with ols and wtd.t.test
+
+# unweighted
+# ols matches t.test with var.equal = TRUE
+# wtd.t.test matches t.test with var.equal = FALSE
+
+fair_price <- fair %>% pull(price)
+fair_weights <- sample(x = seq(from = .5, to = 1, by = .1), size = length(fair_price), replace = TRUE)
+ideal_price <- ideal %>% pull(price)
+ideal_weights <- sample(x = seq(from = .5, to = 1, by = .1), size = length(ideal_price), replace = TRUE)
+
+# t.test
+t.test(x = fair_price, y = ideal_price, alternative = "two.sided") %>% tidy()
+t.test(x = fair_price, y = ideal_price, alternative = "two.sided", var.equal = TRUE) %>% tidy()
+
+# wtd.t.test
+wtd.t.test(x = fair_price, y = ideal_price)
+
+# ols
+ols_unweighted <- fair %>% bind_rows(., ideal) %>% 
+        mutate(fair_dummy = ifelse(cut == "Fair", 1, 0)) %>%
+        lm(formula = price ~ fair_dummy, data = .) %>% tidy()
+ols_unweighted
+
+# get conf int 
+ols_se <- ols_unweighted %>% filter(term == "fair_dummy") %>% pull(std.error)
+ols_se
+
+x_diff <- ols_unweighted %>% filter(term == "fair_dummy") %>% pull(estimate)
+
+# note that 1.96 as critical_value matches t.test with var.equal = TRUE
+x_diff + (1.96 * ols_se)
+x_diff - (1.96 * ols_se)
+
+# but 2 as critical_value is more conservative for small sample size
+x_diff + (2 * ols_se)
+x_diff - (2 * ols_se)
+
+
+##################
+
+
+# weighted
+# as with unweighted, wtd.t.test has a baked in use of var.equal = FALSE, but the results are comparable
+
+# wtd.t.test
+wtd.t.test(x = fair_price, y = ideal_price, weight = fair_weights, weighty = ideal_weights)
+
+# ols
+ols_weighted <- fair %>% bind_rows(., ideal) %>% 
+        mutate(fair_dummy = ifelse(cut == "Fair", 1, 0),
+               weights = c(fair_weights, ideal_weights)) %>%
+        lm(formula = price ~ fair_dummy, data = ., weights = weights) %>% tidy()
+ols_weighted 
+
+# get conf int 
+ols_se <- ols_weighted %>% filter(term == "fair_dummy") %>% pull(std.error)
+ols_se
+
+x_diff <- ols_unweighted %>% filter(term == "fair_dummy") %>% pull(estimate)
+
+# note that 1.96 as critical_value matches t.test with var.equal = TRUE
+x_diff + (2 * ols_se)
+x_diff - (2 * ols_se)
 
 
 
@@ -386,13 +500,19 @@ p_diff - (critical_t_value * se)
 
 
 # using ols
-# get same as prop.test without yates continuity correction (see below)
+# get same t_score, p_value, conf int, and standard error as manual calculation
+# get same p_value as prop.test without yates continuity correction (see below), 
+# but different statistic (chi-squared i think), and very slightly different conf int (could just be rounding)
 ols <- diamonds %>% mutate(high_price = ifelse(price > mean(price), 1, 0),
                              fair_dummy = ifelse(cut == "Fair", 1, 0)) %>%
         lm(formula = fair_dummy ~ high_price, data = .)
 
 ols %>% summary()
 
+# note that intercept is the proportion of diamonds that are fair when high_price is turned off
+# and the coefficient on high_price shows the jump in fair proportion when high_price is turned on 
+# the coefficent can also be interpreted as the difference in fair proportion 
+# between the reference category of high_price = 0, and when it's turned on to high_price = 1
 ols %>% tidy()
 
 # get critical_t_value 
@@ -406,6 +526,31 @@ ols_se
 p_diff + (critical_t_value * ols_se)
 p_diff - (critical_t_value * ols_se)
 
+# calculate standard error manually using formula given at 
+# https://stattrek.com/regression/slope-test.aspx
+# https://www.statisticshowto.datasciencecentral.com/find-standard-error-regression-slope/
+# sqrt [ Σ(yi - ŷi)2 / (n - 2) ] / sqrt [ Σ(xi - x)2 ]
+diamond_data_for_ols <- diamonds %>% mutate(high_price = ifelse(price > mean(price), 1, 0),
+                                            fair_dummy = ifelse(cut == "Fair", 1, 0))
+diamond_data_for_ols_with_pred <- predict(object = ols, newdata = diamond_data_for_ols) %>% tibble(predicted_fair = .) %>% 
+        bind_cols(diamond_data_for_ols, .)
+diamond_data_for_ols_with_pred
+diamond_data_for_ols_with_pred %>% tabyl(predicted_fair, high_price)
+
+diamond_data_for_ols_with_pred %>% mutate(squared_fair_dummy_error = (fair_dummy - predicted_fair)^2,
+                                          squared_high_price_actual_diff_from_mean = high_price - mean(high_price)) %>%
+        summarize(se = sqrt( (sum(squared_fair_dummy_error) / 53938) / sqrt( sum(squared_high_price_actual_diff_from_mean) ) )) 
+
+# high_price_mean <- diamonds %>% mutate(high_price = ifelse(price > mean(price), 1, 0),
+#                     fair_dummy = ifelse(cut == "Fair", 1, 0)) %>% summarize(high_price_mean = mean(high_price)) %>% pull(high_price_mean)
+# high_price_mean
+# 
+# fair_dummy_mean <- diamonds %>% mutate(high_price = ifelse(price > mean(price), 1, 0),
+#                                        fair_dummy = ifelse(cut == "Fair", 1, 0)) %>% summarize(fair_dummy_mean = mean(fair_dummy)) %>% pull(fair_dummy_mean)
+# fair_dummy_mean
+# 
+# diamonds %>% mutate(high_price = ifelse(price > mean(price), 1, 0),
+#                     fair_dummy = ifelse(cut == "Fair", 1, 0), high_price_diff_from_mean = high_price)
 
 #############################################################################
 
@@ -423,7 +568,7 @@ x2
 n2 <- low_price %>% nrow()
 n2
 
-# without yates continuity correction (default) - note this is same as ols and manual
+# without yates continuity correction  - note this is same p_value as ols/manual, but slightly different conf_int (probably because chi-sq. stat?)
 # sthda.com says "yates correction is really important if either the expected successes or failures is < 5"
 # although multiple sources say it's common advice to not use yates correction at all anymore because it overcorrects, despite base r prop.test default
 # https://www.statisticshowto.datasciencecentral.com/what-is-the-yates-correction/
@@ -437,6 +582,9 @@ prop.test(x = c(x1, x2), n = c(n1, n2), alternative = "two.sided") %>% tidy()
 # comparison with t.test for means
 # note that statistic used is completely different, p-value is slightly lower for prop.test, but conf int looks the same
 t.test(x = high_price %>% pull(fair_dummy), y = low_price %>% pull(fair_dummy), alternative = "two.sided") %>% tidy()
+
+# t.test with var.equal gets same p_value, stat, conf_int as ols and manual
+t.test(x = high_price %>% pull(fair_dummy), y = low_price %>% pull(fair_dummy), alternative = "two.sided", var.equal = TRUE) %>% tidy()
 
 
 #############################################################################################
